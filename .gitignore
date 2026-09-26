@@ -1,0 +1,16 @@
+# 迁移包：默认是脱敏的，但仍然不该进仓库
+*.tar.gz
+WorkBuddy-migrate-latest/
+
+# 任何形式的凭据文件
+.env
+.env.*
+*.pem
+*.key
+
+# macOS / 编辑器噪音
+.DS_Store
+ Thumbs.db
+.vscode/
+.idea/
+node_modules/
