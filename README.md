@@ -51,6 +51,22 @@ bash ~/.workbuddy/skills/workbuddy-env-migrate/scripts/chatcut-refresh.sh full
 
 `restore` without `--force` only lists the paths it would overwrite and exits, for human confirmation.
 
+### If `git push` is blocked
+
+Some networks (corporate TLS interception, for instance) reset the connection to
+`github.com:443` during the TLS handshake while `api.github.com` still answers.
+`git push` then dies with `Recv failure: Connection reset by peer`, and no amount
+of re-authentication changes that. This repo ships an API-based publisher as a
+workaround:
+
+```bash
+python3 scripts/publish-api.py
+```
+
+It performs the same blobs → tree → commit → ref sequence over the REST API.
+Requires the [`gh` CLI](https://cli.github.com/) and an authenticated session.
+`--dry-run` shows what would change without touching the remote.
+
 ## Credentials are redacted by default
 
 `backup` never puts your real `mcp.json` in the archive. The file is copied to a temp directory, where every field whose key contains `token`, `secret`, `password`, `apiKey`, `authorization`, or `credential` is replaced with `__REDACTED__`. The copy is what gets tarred.
@@ -71,6 +87,47 @@ bash .../workbuddy-migrate.sh backup --with-secrets
 Never commit the result. The default behaviour exists precisely to make that mistake unnecessary.
 
 Set `WB_MIGRATE_SECRETS=1` if you prefer the environment variable over the flag.
+
+Four credential shapes are covered, because missing any one of them means a key
+ends up inside the archive:
+
+| Shape | Example |
+|---|---|
+| Sensitive key name | `headers.Authorization`, `env.API_KEY` |
+| `Bearer` prefix in a value | `X-Auth: "Bearer sk-..."` |
+| Flag/value pairs in `args` | `["--api-key", "sk-..."]`, `["--api-key=sk-..."]` |
+| Query parameter in a URL | `url: "https://h/mcp?token=sk-..."` |
+
+Values become `__REDACTED__`; non-sensitive fields (`LOG_LEVEL`, `X-Trace`,
+package names, the URL body) pass through untouched. A high-entropy heuristic is
+deliberately *not* used — it misfires on URLs and hashes, and the four shapes
+above cover real-world MCP configuration.
+
+## What gets packaged
+
+`MANIFEST` is a **path whitelist**, not a file list, which is what makes the tool
+survive you installing new things:
+
+| You added | Packaged automatically? | What to do |
+|---|---|---|
+| A new Skill | ✅ Yes | Drop it in `~/.workbuddy/skills/` — that entry is directory-level |
+| A new MCP server | ✅ Yes | Add it to the same `~/.workbuddy/mcp.json`; redaction applies |
+| A large directory inside a Skill (job output) | ⚠️ Bloats the archive | Add its full relative path to `EXCLUDES` |
+| Anything outside the manifest | ❌ No | Use `--extra <rel-path>` per run, or add it to `MANIFEST` |
+| A new file containing credentials | ❌ Not redacted | Register it in `MANIFEST` **and** `SECRET_FILES` |
+
+```bash
+# Ad-hoc extras (repeatable). Packaged as-is — NOT redacted.
+bash .../workbuddy-migrate.sh backup --extra .workbuddy/my-config
+```
+
+Extras always get their own warning block in `MANIFEST.md`, so a package that
+contains un-redacted material says so on its face.
+
+`status` also lists any `.json` / `.md` files under `~/.workbuddy/` that aren't in
+the manifest, so a new config file doesn't get silently left behind. WorkBuddy's
+own runtime state (caches, markers, the various `*-state.json`) is listed in
+`IGNORE_NAMES` and stays out of that report.
 
 ## ChatCut token refresher
 

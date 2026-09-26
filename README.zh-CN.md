@@ -51,6 +51,16 @@ bash ~/.workbuddy/skills/workbuddy-env-migrate/scripts/chatcut-refresh.sh full
 
 `restore` 不带 `--force` 时只列出将被覆盖的路径就退出，供人工确认。
 
+### 如果 `git push` 被拦
+
+某些网络（典型是企业 TLS 中间人）会在 TLS 握手阶段重置到 `github.com:443` 的连接，而 `api.github.com` 照常响应。此时 `git push` 报 `Recv failure: Connection reset by peer`，重认证多少次都没用。本仓库为此附了一个走 API 的发布脚本：
+
+```bash
+python3 scripts/publish-api.py
+```
+
+它用 REST API 完成同样的 blobs → tree → commit → ref 流程。需要 [`gh` CLI](https://cli.github.com/) 并已登录。`--dry-run` 只列出将要变更、不动远端。
+
 ## 凭据默认脱敏
 
 `backup` 不会把真实 `mcp.json` 进包。流程是：先把文件复制到临时目录，把键名含 `token` / `secret` / `password` / `apiKey` / `authorization` / `credential` 的字段全部替换成 `__REDACTED__`，再打包那份副本。原始配置**不进包**。
@@ -71,6 +81,38 @@ bash .../workbuddy-migrate.sh backup --with-secrets
 这种包不要提交到任何仓库。默认行为就是为了让这个失误不必发生。
 
 用环境变量等价开关：`WB_MIGRATE_SECRETS=1`。
+
+覆盖四类凭据形态——漏掉任何一种，密钥就会被打进包：
+
+| 形态 | 例子 |
+|---|---|
+| 键名即敏感词 | `headers.Authorization`、`env.API_KEY` |
+| 值带 Bearer 前缀 | `X-Auth: "Bearer sk-..."` |
+| `args` 里的参数对 | `["--api-key", "sk-..."]`、`["--api-key=sk-..."]` |
+| URL 查询参数 | `url: "https://h/mcp?token=sk-..."` |
+
+值统一替换为 `__REDACTED__`；非敏感字段（`LOG_LEVEL`、`X-Trace`、包名、URL 主体）原样保留。刻意不用高熵字符串启发式——容易误伤 URL 和哈希，而上面四类已覆盖实际 MCP 配置形态。
+
+## 什么会被打包
+
+`MANIFEST` 是**路径白名单**，不是文件清单。这正是它在你不断装新东西之后仍然管用的原因：
+
+| 你新增了 | 自动进包？ | 要做什么 |
+|---|---|---|
+| 新装的 Skill | ✅ 会 | 放到 `~/.workbuddy/skills/` 即可，该条是**目录级**条目 |
+| 新增 MCP server | ✅ 会 | 写进同一个 `~/.workbuddy/mcp.json`，脱敏自动生效 |
+| Skill 里的大目录（如 job 产物） | ⚠️ 会撑大包 | 把完整相对路径加进 `EXCLUDES` |
+| 清单外的其他东西 | ❌ 不会 | 每次用 `--extra <相对路径>` 追加，或写进 `MANIFEST` |
+| 新的凭据文件 | ❌ 不会脱敏 | 同时登记进 `MANIFEST`（进包）和 `SECRET_FILES`（脱敏） |
+
+```bash
+# 临时追加（可重复）。按原样打包，不脱敏。
+bash .../workbuddy-migrate.sh backup --extra .workbuddy/my-config
+```
+
+`--extra` 追加的内容会在 `MANIFEST.md` 里单列一段警告，所以含未脱敏内容的包会自己说明这件事。
+
+`status` 还会列出 `~/.workbuddy/` 下**未纳入清单**的 `.json` / `.md` 文件，避免新配置被静默遗漏。WorkBuddy 自身的运行时状态（缓存、marker、各种 `*-state.json`）已列在 `IGNORE_NAMES` 里，不会刷屏。
 
 ## ChatCut token 刷新
 

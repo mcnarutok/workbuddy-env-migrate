@@ -39,7 +39,18 @@ bash ~/.workbuddy/skills/workbuddy-env-migrate/scripts/workbuddy-migrate.sh back
 
 默认输出到 `~/WorkBuddy-migrate-latest/`，同时生成 `MANIFEST.md`（含每项「必需 / 可重建」标注）。
 
-**默认脱敏**。打包时 `mcp.json` 不走原文件通道，而是在临时目录生成一份副本，把所有 `token` / `secret` / `password` / `apiKey` / `authorization` / `credential` 类字段替换成 `__REDACTED__` 后再进包。原始配置**不进包**。因此迁移包不含任何真实凭据，可以安全上传、分享、提交到仓库。
+**默认脱敏**。`SECRET_FILES` 里登记的文件（默认只有 `mcp.json`）不打原文件，而是在临时目录生成脱敏副本再进包，覆盖四类凭据形态：
+
+| 形态 | 例子 |
+|---|---|
+| 键名即敏感词 | `headers.Authorization`、`env.API_KEY` |
+| 值带 Bearer 前缀 | `X-Auth: "Bearer sk-..."` |
+| 命令行参数成对 | `args: ["--api-key", "sk-..."]`、`["--api-key=sk-..."]` |
+| URL 查询参数 | `url: "https://h/mcp?token=sk-..."` |
+
+值统一替换为 `__REDACTED__`，非敏感字段（`LOG_LEVEL`、`X-Trace`、包名、URL 主体）原样保留。原始配置**不进包**，因此迁移包可安全上传、分享、提交。
+
+刻意不用高熵字符串启发式：容易误伤 URL 和哈希，而上面四类已覆盖实际配置形态。
 
 代价是恢复后 MCP 会报 Unauthorized，属预期行为——补授权见第 5 步。
 
@@ -52,7 +63,29 @@ bash ... workbuddy-migrate.sh backup --with-secrets
 
 **这种包绝对不要提交到代码仓库。** 默认行为即为此服务的，绝大多数场景不需要这个开关。
 
+#### 追加清单外的路径
+
+```bash
+bash ... backup --extra .workbuddy/my-config --extra .workbuddy/other.json
+```
+
+可重复。**这些路径原样打包，不脱敏**，MANIFEST.md 里会单列一段警告。带密钥的配置要走脱敏，得登记进 `SECRET_FILES`（见下）。
+
 排除项在脚本 `EXCLUDES` 里：`.workbuddy/skills/cut-motion/jobs`（测试产物）。新增大目录时往数组里加完整相对路径。
+
+### 2.5 新增内容如何进包
+
+这是常被问到的一点，`MANIFEST` 是**路径白名单**，不是文件清单：
+
+| 新增内容 | 是否自动进包 | 要做什么 |
+|---|---|---|
+| 新装的 Skill | ✅ 自动 | 放到 `~/.workbuddy/skills/` 即可，该条是**目录级**条目 |
+| 新增 MCP server | ✅ 自动 | 写进同一个 `~/.workbuddy/mcp.json`，且自动脱敏 |
+| Skill 里的大目录（如 job 产物） | ⚠️ 会拖大包 | 往 `EXCLUDES` 加完整相对路径 |
+| 清单外的其他配置 | ❌ 不会 | 用 `--extra` 临时追加，或写进 `MANIFEST` |
+| 新的凭据文件 | ❌ 不会脱敏 | 同时登记进 `MANIFEST`（进包）和 `SECRET_FILES`（脱敏） |
+
+`status` 会列出 `~/.workbuddy/` 下**未纳入清单**的 `.json` / `.md` 文件作提示；WorkBuddy 自身的运行时状态（缓存、marker、各 `*-state.json`）在 `IGNORE_NAMES` 里，不会刷屏。
 
 ### 3. 换机后：恢复
 
@@ -98,7 +131,9 @@ cat ~/.workbuddy/mcp.json        # 配置是否正确
 
 - **配置文件名不能带前导点**：必须是 `~/.workbuddy/mcp.json`，写成 `.mcp.json` 服务器永远不出现。
 - **bash 3.2 与全角括号**：macOS 自带 bash 3.2 在 UTF-8 locale 下把全角 `）` 当作变量名字符，`echo "HTTP $code）"` 会被解析成展开变量 `code）`，报 `code?: unbound variable`。变量与全角括号相邻时一律写成 `${code}`，或在中间留空格。
+- **bash 3.2 与空数组**：`set -u` 下展开空数组 `"${arr[@]}"` 报 `arr[@]: unbound variable`（bash 4.4 才修）。必须写 `"${arr[@]:-}"`，且它会迭代出一个空元素，循环内要 `[[ -n "$x" ]] || continue` 掉。`${#arr[@]}` 本身安全，可用来判长度。
 - **macOS 自带 bsdtar**：exclude 通配符的 `*` 不跨 `/`，只能写完整相对路径，写 `*/node_modules` 无效。
+- **一条 tar 命令可接多个 `-C`**（bsdtar 与 GNU tar 都支持）：`tar -czf x.tgz -C $HOME a/b -C $tmpdir a/b` 能把不同来源的文件合并进同一个包且各自保留路径结构。这是「原文件不进包、只打脱敏副本」的落地方式——`tar --append` 追加到 gzip 档是行不通的。
 - **API 主机是 `api.chatcut.io`**：用 `chatcut.io` 注册会返回一整个首页 HTML（SPA fallback），不报错但不生效。
 - **版本必须精确匹配**：cut-motion 每个 job 钉死 `hyperframes@0.7.60`，npm `latest` 已是 0.8.x，装最新版不会被复用，工作流仍会联网重下。
 - **job 必须建在 cut-motion 仓库内的 `jobs/<id>/`**：脚本用 `../../../scripts/...` 相对路径调仓内脚本，放 /tmp 会 MODULE_NOT_FOUND。
